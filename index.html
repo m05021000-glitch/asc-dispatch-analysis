@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>派遣分析平台</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2433;--muted:#667085;--line:#e4e7ec;--brand:#1f6feb;--red:#d92d20;--amber:#dc6803;--green:#079455;--soft:#eef4ff;--redbg:#fef3f2;--amberbg:#fffaeb}
+@media (prefers-color-scheme: dark){:root{--bg:#0f1218;--card:#171b23;--ink:#e6e9ef;--muted:#98a2b3;--line:#2a303c;--brand:#5b9bff;--soft:#1b2433;--redbg:#2a1715;--amberbg:#2a2113}}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Noto Sans TC",system-ui,-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--ink);font-size:15px}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+header h1{font-size:17px;margin:0}
+nav{gap:4px;overflow-x:auto;padding:8px 16px;background:var(--card);border-bottom:1px solid var(--line)}
+.tab{border:0;background:transparent;color:var(--muted);padding:8px 12px;border-radius:8px;cursor:pointer;font-size:14px;white-space:nowrap}
+.tab.on{background:var(--soft);color:var(--brand);font-weight:600}
+main{max-width:1200px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+.card h2{font-size:16px;margin:0 0 12px}
+.card h3{font-size:14px;margin:16px 0 8px;color:var(--muted)}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+.kpi .v{font-size:22px;font-weight:700;margin-top:4px}
+.kpi .l{font-size:12px;color:var(--muted)}
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{color:var(--muted);font-weight:600;background:var(--bg);white-space:nowrap}
+input,select{font:inherit;font-size:14px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);max-width:100%}
+input[type=number]{width:100px}
+.btn{border:1px solid var(--brand);background:var(--brand);color:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font:inherit;font-size:14px;white-space:nowrap}
+.btn.ghost{background:transparent;color:var(--brand)}
+.btn.danger{border-color:var(--red);background:transparent;color:var(--red)}
+.btn.sm{padding:3px 8px;font-size:13px}
+.btn:disabled{opacity:.45;cursor:default}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:12px}
+.row label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:4px}
+.alert{padding:10px 12px;border-radius:8px;margin-bottom:8px;border-left:4px solid var(--red);background:var(--redbg)}
+.alert.amber{border-color:var(--amber);background:var(--amberbg)}
+.ok{color:var(--green)} .bad{color:var(--red);font-weight:600} .muted{color:var(--muted);font-size:12px}
+.hint{font-size:12px;color:var(--muted);margin:6px 0 12px;line-height:1.7}
+.links a{margin-right:8px;font-size:12px;color:var(--brand)}
+.login{max-width:380px;margin:10vh auto}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;display:none;z-index:20;font-size:14px;max-width:90vw}
+</style>
+</head>
+<body>
+<header><h1>派遣分析平台</h1><div id="who"></div></header>
+<nav id="nav" style="display:none"></nav>
+<main id="app"></main>
+<div id="toast"></div>
+
+<script>
+/* =========================================================
+   ★ 部署時填入（Supabase 後台 › Project Settings › API）
+   只能填 anon public key，絕對不要填 service_role key
+   ========================================================= */
+const SUPABASE_URL = 'https://koaawryafchykksbrcuj.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_gr2_bTlaqV-ylAs7B8hNAw_5dqbZKXR';
+
+const ROLES = ['揀貨','理貨','堆高機','裝卸','其他'];
+const SHIFTS = ['日班','夜班'];
+const SEASONS = ['平季','旺季'];
+const S = { sites:[], vendors:[], contracts:[], minWage:[], settings:{} };
+let sb = null;
+
+/* ---------- 小工具 ---------- */
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = (n,d=0) => (n==null || isNaN(n)) ? '—' : Number(n).toLocaleString('zh-TW',{maximumFractionDigits:d,minimumFractionDigits:d});
+const pct = (n,d=1) => (n==null || isNaN(n)) ? '—' : (n*100).toFixed(d)+'%';
+const monthStr = d => d ? String(d).slice(0,7) : '';
+const toPeriod = m => m + '-01';
+const siteName = id => S.sites.find(x=>x.id===id)?.name || '—';
+const siteCity = id => S.sites.find(x=>x.id===id)?.city || '';
+const vendorName = id => S.vendors.find(x=>x.id===id)?.name || '—';
+const sum = (rs,f) => rs.reduce((a,r)=>a+(Number(r[f])||0),0);
+const num = v => { if (v===''||v==null) return null; const n = Number(String(v).replace(/[,，\s元$]/g,'')); return isNaN(n)?null:n; };
+function toast(m){ const t=$('#toast'); t.textContent=m; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none',3500); }
+async function q(p){ const {data,error} = await p; if (error){ toast('錯誤：'+error.message); throw error; } return data; }
+async function all(table, build=x=>x){
+  let out=[], from=0; const size=1000;
+  while (true){
+    const d = await q(build(sb.from(table).select('*')).range(from, from+size-1));
+    out = out.concat(d); if (d.length < size) break; from += size;
+  }
+  return out;
+}
+function groupBy(rows,keyFn){ const m=new Map(); rows.forEach(r=>{const k=keyFn(r); if(!m.has(k)) m.set(k,[]); m.get(k).push(r);}); return m; }
+function months(rows){ return [...new Set(rows.map(r=>monthStr(r.period)))].filter(Boolean).sort(); }
+function wavg(rows,f,w='hours'){ let s=0,ws=0; rows.forEach(r=>{ if(r[f]==null) return; const v=Number(r[f]), ww=Number(r[w])||0; if(!isNaN(v)&&ww>0){s+=v*ww;ws+=ww;} }); return ws? s/ws : null; }
+function opt(list,sel){ return list.map(x=>`<option value="${x.id}" ${x.id===sel?'selected':''}>${esc(x.name)}</option>`).join(''); }
+function optS(arr,sel){ return arr.map(x=>`<option ${x===sel?'selected':''}>${esc(x)}</option>`).join(''); }
+function kpi(l,v){ return `<div class="kpi"><div class="l">${l}</div><div class="v">${esc(v)}</div></div>`; }
+function minWageFor(dateStr){ const d=new Date(dateStr); let cur=null; [...S.minWage].sort((a,b)=>a.year-b.year).forEach(w=>{ if(w.effective_date && new Date(w.effective_date)<=d) cur=w; }); return cur; }
+
+/* ---------- 登入 ---------- */
+async function init(){
+  if (SUPABASE_URL.startsWith('請填入')){
+    $('#app').innerHTML = '<div class="card login"><h2>尚未設定</h2><p class="hint">請在 index.html 開頭填入 Supabase 專案網址與 anon key。</p></div>';
+    return;
+  }
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  buildNav();
+  const {data:{session}} = await sb.auth.getSession();
+  if (!session) return renderLogin();
+  afterLogin();
+}
+function renderLogin(){
+  $('#nav').style.display='none'; $('#who').innerHTML='';
+  $('#app').innerHTML = `<div class="card login"><h2>HR 登入</h2>
+    <div class="row"><label style="width:100%">Email<input id="em" type="email" autocomplete="username"></label></div>
+    <div class="row"><label style="width:100%">密碼<input id="pw" type="password" autocomplete="current-password"></label></div>
+    <button class="btn" id="lg">登入</button>
+    <p class="hint">帳號由平台管理者建立，並加入 HR 名單後才能讀取資料。</p></div>`;
+  const go = async()=>{ const {error}=await sb.auth.signInWithPassword({email:$('#em').value.trim(),password:$('#pw').value}); if(error) return toast('登入失敗：'+error.message); afterLogin(); };
+  $('#lg').onclick = go; $('#pw').onkeydown = e=>{ if(e.key==='Enter') go(); };
+}
+async function afterLogin(){
+  const {data:{user}} = await sb.auth.getUser();
+  const ok = await q(sb.rpc('is_hr'));
+  if (!ok){
+    $('#app').innerHTML = '<div class="card login"><h2>無權限</h2><p class="hint">此帳號不在 HR 名單中，請聯絡平台管理者。</p><button class="btn ghost" onclick="logout()">登出</button></div>';
+    return;
+  }
+  $('#who').innerHTML = `<span class="muted">${esc(user.email)}</span> <button class="btn ghost sm" onclick="logout()">登出</button>`;
+  $('#nav').style.display='flex';
+  await loadBase();
+  go('overview');
+}
+async function logout(){ await sb.auth.signOut(); renderLogin(); }
+async function loadBase(){
+  [S.sites,S.vendors,S.contracts,S.minWage] = await Promise.all([
+    all('sites',x=>x.order('name')), all('vendors',x=>x.order('name')), all('contracts'), all('min_wage',x=>x.order('year'))
+  ]);
+  const st = await all('settings');
+  S.settings = Object.fromEntries(st.map(r=>[r.key, Number(r.value)]));
+}
+async function loadFacts(){
+  const [inv,att,mkt] = await Promise.all([all('invoice_lines'), all('attendance'), all('market_rates')]);
+  return {inv,att,mkt};
+}
+
+/* ---------- 導覽 ---------- */
+const PAGES = {
+  overview:['總覽',pOverview], invoice:['請款上傳',pInvoice], attend:['出勤上傳',pAttend],
+  market:['市場時薪',pMarket], analysis:['分析',pAnalysis], master:['基本資料',pMaster], settings:['設定',pSettings]
+};
+function buildNav(){
+  $('#nav').innerHTML = Object.entries(PAGES).map(([k,[n]])=>`<button class="tab" data-page="${k}">${n}</button>`).join('');
+  $('#nav').onclick = e => { const k=e.target.dataset?.page; if(k) go(k); };
+}
+function go(k){
+  document.querySelectorAll('#nav .tab').forEach(b=>b.classList.toggle('on', b.dataset.page===k));
+  $('#app').innerHTML = '<div class="card">載入中…</div>';
+  PAGES[k][1]().catch(e=>console.error(e));
+}
+
+/* =========================================================
+   分析引擎 L1–L4 與警示
+   ========================================================= */
+function calcL1(inv,month){
+  const burden=(S.settings.employer_burden_pct ?? 20)/100;
+  const rows=inv.filter(r=>monthStr(r.period)===month);
+  return [...groupBy(rows,r=>r.vendor_id)].map(([vid,rs])=>{
+    const bill=wavg(rs,'bill_rate'); let pay=wavg(rs,'pay_rate'); let est=false;
+    if (pay==null){ const mw=minWageFor(month+'-01'); pay=mw?Number(mw.hourly):null; est=true; }
+    const cost = pay!=null ? pay*(1+burden) : null;
+    const margin = (bill!=null && cost!=null) ? bill-cost : null;
+    return {vendor:vendorName(vid), hours:sum(rs,'hours'), bill, pay, est, cost, margin, mpct:(margin!=null&&bill)?margin/bill:null};
+  }).sort((a,b)=>b.hours-a.hours);
+}
+function calcL2(inv,att,month){
+  const ramp=(S.settings.ramp_loss_pct ?? 30)/100;
+  return att.filter(r=>monthStr(r.period)===month).map(r=>{
+    const rs=inv.filter(x=>monthStr(x.period)===month && x.vendor_id===r.vendor_id && x.site_id===r.site_id);
+    const bill=wavg(rs,'bill_rate');
+    const ar = r.requested>0 ? r.attended/r.requested : null;
+    const nr = r.headcount>0 ? (r.new_hires||0)/r.headcount : 0;
+    const ret = r.headcount>0 ? 1-(r.leavers||0)/r.headcount : null;
+    const eff = (bill!=null && ar) ? bill/ar*(1+nr*ramp) : null;
+    return {site:siteName(r.site_id), vendor:vendorName(r.vendor_id), bill, ar, nr, ret, eff};
+  }).sort((a,b)=>(b.eff??0)-(a.eff??0));
+}
+function calcL3(inv,mkt,month){
+  const rows=inv.filter(r=>monthStr(r.period)===month);
+  return [...groupBy(rows,r=>siteCity(r.site_id)+'|'+r.job_role)].map(([k,rs])=>{
+    const [city,role]=k.split('|'); const pay=wavg(rs,'pay_rate');
+    const m=mkt.filter(x=>x.city===city && x.job_role===role && monthStr(x.period)<=month)
+               .sort((a,b)=>String(b.period).localeCompare(String(a.period)))[0];
+    const mid = m ? Number(m.rate_mid) : null;
+    return {city, role, pay, mid, mmonth:m?monthStr(m.period):'', ratio:(pay!=null&&mid)?pay/mid:null};
+  });
+}
+function calcL4(inv){
+  const today=new Date().toISOString().slice(0,10);
+  const sorted=[...S.minWage].sort((a,b)=>a.year-b.year);
+  const next=sorted.find(w=>w.effective_date>today);
+  if (!next) return {next:null, rows:[]};
+  const prev=[...sorted].reverse().find(w=>w.effective_date<=today);
+  const burden=(S.settings.employer_burden_pct ?? 20)/100;
+  const dHour = prev ? Number(next.hourly)-Number(prev.hourly) : null;
+  const ms = months(inv).slice(-3);
+  const rows = S.contracts.map(c=>{
+    const rs=inv.filter(r=>r.vendor_id===c.vendor_id && (!c.site_id || r.site_id===c.site_id) && ms.includes(monthStr(r.period)));
+    const mc = new Set(rs.map(r=>monthStr(r.period))).size;
+    const hrs = mc ? sum(rs,'hours')/mc : 0;
+    const bill = wavg(rs,'bill_rate');
+    const none = c.adjust_clause==='無';
+    const dBill = none ? 0 : (dHour!=null ? dHour*(1+burden)*(1+(Number(c.markup_rate)||0)) : null);
+    return {vendor:vendorName(c.vendor_id), site:c.site_id?siteName(c.site_id):'全部站點', clause:c.adjust_clause||'未填',
+            bill, hrs, dBill, annual:dBill!=null?dBill*hrs*12:null, newBill:(bill!=null&&dBill!=null)?bill+dBill:bill};
+  });
+  return {next, prev, dHour, rows};
+}
+function calcAlerts(F){
+  const out=[], T=S.settings, ms=months(F.inv);
+  if (ms.length>=2){
+    const [p,c]=ms.slice(-2);
+    groupBy(F.inv.filter(r=>[p,c].includes(monthStr(r.period))), r=>[r.vendor_id,r.site_id,r.job_role].join('|')).forEach((rs,k)=>{
+      const a=wavg(rs.filter(r=>monthStr(r.period)===p),'bill_rate'), b=wavg(rs.filter(r=>monthStr(r.period)===c),'bill_rate');
+      if (a && b && (b/a-1)*100 > (T.price_mom_pct??3)){
+        const [v,s,role]=k.split('|');
+        out.push({lv:'red', t:`單價上漲：${vendorName(v)}／${siteName(s)}／${role}，${c} 較 ${p} 上漲 ${pct(b/a-1)}（${fmt(a,1)} → ${fmt(b,1)}）`});
+      }
+    });
+  }
+  const am=months(F.att).at(-1);
+  if (am) F.att.filter(r=>monthStr(r.period)===am).forEach(r=>{
+    if (r.requested>0 && r.attended/r.requested*100 < (T.attendance_min_pct??85))
+      out.push({lv:'red', t:`到班率偏低：${siteName(r.site_id)}／${vendorName(r.vendor_id)}，${am} 到班率 ${pct(r.attended/r.requested)}`});
+  });
+  if (ms.length) calcL3(F.inv,F.mkt,ms.at(-1)).forEach(r=>{
+    if (r.ratio!=null && r.ratio*100 < (T.market_ratio_min_pct??95))
+      out.push({lv:'amber', t:`低於市場：${r.city}／${r.role}，我方時薪 ${fmt(r.pay)}，市場中位數 ${fmt(r.mid)}（${pct(r.ratio,0)}）`});
+  });
+  const L4=calcL4(F.inv);
+  if (L4.next){
+    const days=Math.ceil((new Date(L4.next.effective_date)-new Date())/864e5);
+    if (days <= (T.wage_alert_days??90)){
+      const n=S.contracts.filter(c=>['綁最低工資','需另議'].includes(c.adjust_clause)).length;
+      out.push({lv:'amber', t:`最低工資將於 ${L4.next.effective_date} 調整為時薪 ${L4.next.hourly} 元（剩 ${days} 天），${n} 份合約可能觸發調價，請看「分析 › L4 調價試算」`});
+    }
+  }
+  return out;
+}
+
+/* ---------- 總覽 ---------- */
+let chart;
+async function pOverview(){
+  const F=await loadFacts(); const ms=months(F.inv); const last=ms.at(-1); const al=calcAlerts(F);
+  const rows=F.inv.filter(r=>monthStr(r.period)===last);
+  const am=months(F.att).at(-1); const ar=F.att.filter(r=>monthStr(r.period)===am);
+  const req=sum(ar,'requested'), att=sum(ar,'attended');
+  $('#app').innerHTML = `<div class="grid">
+      ${kpi('最新請款月份', last||'尚無資料')}${kpi('當月請款工時', fmt(sum(rows,'hours')))}
+      ${kpi('加權平均請款時薪', fmt(wavg(rows,'bill_rate'),1))}${kpi('最新到班率', req?pct(att/req):'—')}${kpi('警示數', al.length)}</div>
+    <div class="card"><h2>警示</h2>${al.length ? al.map(a=>`<div class="alert ${a.lv==='amber'?'amber':''}">${esc(a.t)}</div>`).join('') : '<p class="ok">目前沒有警示。</p>'}
+      <p class="hint">門檻可在「設定」調整。</p></div>
+    <div class="card"><h2>各派遣商請款時薪趨勢</h2>${ms.length?'<canvas id="ch" height="120"></canvas>':'<p class="muted">尚無請款資料。</p>'}</div>`;
+  if (ms.length){
+    const ds=[...groupBy(F.inv,r=>r.vendor_id)].map(([v,rs])=>({label:vendorName(v), data:ms.map(m=>wavg(rs.filter(r=>monthStr(r.period)===m),'bill_rate')), spanGaps:true, tension:.2}));
+    chart?.destroy();
+    chart=new Chart($('#ch'),{type:'line',data:{labels:ms,datasets:ds},options:{plugins:{legend:{position:'bottom'}},scales:{y:{title:{display:true,text:'元/時'}}}}});
+  }
+}
+
+/* ---------- 請款上傳 ---------- */
+const INV_FIELDS=[['site','站點',true],['job_role','職務',true],['shift','班別',false],['season','季節',false],
+  ['bill_rate','請款時薪（元/時）',true],['pay_rate','員工時薪（若有）',false],['hours','正常工時',true],
+  ['ot_hours','加班工時',false],['ot_amount','加班費金額',false],['surcharge_amount','加價金額（夜班／旺季等）',false]];
+const KW={site:['站點','倉別','據點','倉庫'],job_role:['職務','工作內容','職稱','工種'],shift:['班別'],
+  bill_rate:['請款單價','單價','費率','請款時薪'],pay_rate:['員工時薪','薪資時薪','底薪時薪'],hours:['正常工時','工時','時數'],
+  ot_hours:['加班時數','加班工時'],ot_amount:['加班費'],surcharge_amount:['加給','加價','津貼']};
+let U={raw:[],rows:[],headers:[],file:'',hr:0}, P=null;
+
+async function pInvoice(){
+  $('#app').innerHTML = `<div class="card"><h2>請款上傳</h2>
+    <p class="hint">支援 Excel／CSV。平台只讀取你對應的欄位，姓名、身分證等欄位不對應就不會進資料庫；入庫前會依站點、職務、班別、季節、單價彙總，不保留個人層級資料。同一家派遣商第二次上傳時，會自動套用上次的對應。</p>
+    <div class="row"><label>派遣商<select id="iv">${opt(S.vendors)}</select></label>
+      <label>請款月份<input type="month" id="im"></label>
+      <label>檔案<input type="file" id="if" accept=".xlsx,.xls,.csv"></label></div>
+    <div id="imap">${S.vendors.length&&S.sites.length?'':'<p class="bad">請先到「基本資料」建立派遣商與站點。</p>'}</div></div>
+    <div class="card"><h2>已入庫紀錄</h2><div id="ihist"></div></div>`;
+  U={raw:[],rows:[],headers:[],file:'',hr:0};
+  $('#if').onchange=readFile;
+  $('#iv').onchange=()=>{ if(U.raw.length){ applySavedHr(); buildRows(); renderMap(); } };
+  histInv();
+}
+function applySavedHr(){ const v=S.vendors.find(x=>x.id===$('#iv').value); if(v?.column_mapping?.hr!=null) U.hr=v.column_mapping.hr; }
+async function readFile(e){
+  const f=e.target.files[0]; if(!f) return;
+  const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+  U.raw=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''});
+  U.file=f.name;
+  let best=0; U.hr=0;
+  U.raw.slice(0,15).forEach((r,i)=>{ const n=r.filter(c=>typeof c==='string'&&c.trim()).length; if(n>best){best=n;U.hr=i;} });
+  applySavedHr(); buildRows(); renderMap();
+}
+function buildRows(){
+  const seen={};
+  U.headers=(U.raw[U.hr]||[]).map((c,i)=>{ let h=String(c||'').trim()||`欄${i+1}`; if(seen[h]){ seen[h]++; h=h+'_'+seen[h]; } else seen[h]=1; return h; });
+  U.rows=U.raw.slice(U.hr+1).filter(r=>r.some(c=>c!=='')).map(r=>Object.fromEntries(U.headers.map((k,i)=>[k,r[i]])));
+}
+function guessField(k,saved){
+  if (saved[k]) return saved[k];
+  for (const w of (KW[k]||[])){ const col=U.headers.find(h=>h===w) || U.headers.find(h=>h.includes(w)); if (col) return {type:'col',col}; }
+  if (k==='shift') return {type:'fix',val:'日班'};
+  if (k==='season') return {type:'fix',val:'平季'};
+  return {type:'none'};
+}
+function fixInput(k,val){
+  const id='fx_'+k;
+  if (k==='site') return `<select id="${id}"><option value="">—</option>${opt(S.sites,val)}</select>`;
+  if (k==='job_role') return `<select id="${id}"><option value="">—</option>${optS(ROLES,val)}</select>`;
+  if (k==='shift') return `<select id="${id}">${optS(SHIFTS,val)}</select>`;
+  if (k==='season') return `<select id="${id}">${optS(SEASONS,val)}</select>`;
+  return `<input id="${id}" type="number" step="any" value="${esc(val)}">`;
+}
+function renderMap(){
+  const v=S.vendors.find(x=>x.id===$('#iv').value); const saved=v?.column_mapping?.fields||{};
+  $('#imap').innerHTML = `<h3>欄位對應（${esc(U.file)}，共 ${U.rows.length} 列）</h3>
+    <div class="row"><label>標題列在第幾列<input type="number" id="ihr" min="1" value="${U.hr+1}"></label></div>
+    <div class="tw"><table><tr><th>平台欄位</th><th>來源</th><th>固定值（來源選「固定值」時填）</th></tr>
+    ${INV_FIELDS.map(([k,l,req])=>{ const g=guessField(k,saved); return `<tr><td>${l}${req?' <span class="bad">*</span>':''}</td>
+      <td><select data-map="${k}" class="msrc"><option value="__none" ${g.type==='none'?'selected':''}>（不使用）</option>
+        <option value="__fix" ${g.type==='fix'?'selected':''}>固定值</option>
+        ${U.headers.map(h=>`<option value="${esc(h)}" ${g.type==='col'&&g.col===h?'selected':''}>${esc(h)}</option>`).join('')}</select></td>
+      <td>${fixInput(k,g.type==='fix'?g.val:'')}</td></tr>`; }).join('')}</table></div>
+    <p class="hint">站點與職務若選「欄位」，文字需能對應到基本資料的站點名稱；職務會依關鍵字自動歸類（揀、理、堆高、裝卸），對不到的歸「其他」。</p>
+    <div class="row"><button class="btn ghost" id="ipv">預覽彙總結果</button><button class="btn" id="isv" disabled>確認入庫</button></div>
+    <div id="iprev"></div>`;
+  $('#ihr').onchange=e=>{ U.hr=Math.max(0,Number(e.target.value)-1); buildRows(); renderMap(); };
+  $('#ipv').onclick=previewInv; $('#isv').onclick=saveInv;
+  document.querySelectorAll('.msrc').forEach(s=>s.onchange=()=>{ $('#isv').disabled=true; });
+}
+function readMapping(){
+  const f={};
+  document.querySelectorAll('.msrc').forEach(s=>{ const k=s.dataset.map;
+    if (s.value==='__none') f[k]={type:'none'};
+    else if (s.value==='__fix') f[k]={type:'fix',val:$('#fx_'+k).value};
+    else f[k]={type:'col',col:s.value}; });
+  return f;
+}
+const normRole=v=>{ v=String(v||''); if(ROLES.includes(v)) return v; if(/揀|撿|pick/i.test(v)) return '揀貨'; if(/理|上架|補貨/.test(v)) return '理貨'; if(/堆高|叉車|fork/i.test(v)) return '堆高機'; if(/裝|卸|搬/.test(v)) return '裝卸'; return '其他'; };
+const normShift=v=>/夜|晚|night/i.test(String(v))?'夜班':'日班';
+const normSeason=v=>/旺|peak/i.test(String(v))?'旺季':'平季';
+function normSite(v){ v=String(v||'').trim(); if(!v) return null;
+  const s=S.sites.find(x=>x.id===v||x.name===v) || S.sites.find(x=>v.includes(x.name)||x.name.includes(v)); return s?.id||null; }
+function mapRows(){
+  const m=readMapping(); const errs=[];
+  const get=(r,k)=>{ const x=m[k]; if(!x||x.type==='none') return null; return x.type==='fix'?x.val:r[x.col]; };
+  const out=U.rows.map((r,i)=>{
+    const o={site_id:normSite(get(r,'site')), job_role:normRole(get(r,'job_role')), shift:normShift(get(r,'shift')), season:normSeason(get(r,'season')),
+      bill_rate:num(get(r,'bill_rate')), pay_rate:num(get(r,'pay_rate')), hours:num(get(r,'hours'))||0, ot_hours:num(get(r,'ot_hours'))||0,
+      ot_amount:num(get(r,'ot_amount'))||0, surcharge_amount:num(get(r,'surcharge_amount'))||0};
+    const line=i+U.hr+2;
+    if (o.bill_rate==null && (!o.hours || !o.site_id)) return null;  // 空白列、合計列
+    if (!o.site_id){ errs.push(`第 ${line} 列找不到站點`); return null; }
+    if (o.bill_rate==null){ errs.push(`第 ${line} 列缺請款時薪`); return null; }
+    return o;
+  }).filter(Boolean);
+  const agg=[...groupBy(out,o=>[o.site_id,o.job_role,o.shift,o.season,o.bill_rate,o.pay_rate??''].join('|')).values()]
+    .map(rs=>({...rs[0], hours:sum(rs,'hours'), ot_hours:sum(rs,'ot_hours'), ot_amount:sum(rs,'ot_amount'), surcharge_amount:sum(rs,'surcharge_amount')}));
+  return {agg, errs, mapping:m};
+}
+function previewInv(){
+  if (!$('#im').value) return toast('請選擇請款月份');
+  P=mapRows();
+  $('#iprev').innerHTML = `<h3>彙總後 ${P.agg.length} 筆（原始 ${U.rows.length} 列）</h3>
+    ${P.errs.length?`<p class="bad">有 ${P.errs.length} 列被略過：${esc(P.errs.slice(0,5).join('、'))}${P.errs.length>5?'…':''}</p>`:''}
+    <div class="tw"><table><tr><th>站點</th><th>職務</th><th>班別</th><th>季節</th><th>請款時薪</th><th>員工時薪</th><th>工時</th><th>加班工時</th><th>加班費</th><th>加價</th></tr>
+    ${P.agg.map(o=>`<tr><td>${esc(siteName(o.site_id))}</td><td>${o.job_role}</td><td>${o.shift}</td><td>${o.season}</td><td>${fmt(o.bill_rate,1)}</td><td>${fmt(o.pay_rate,1)}</td><td>${fmt(o.hours,1)}</td><td>${fmt(o.ot_hours,1)}</td><td>${fmt(o.ot_amount)}</td><td>${fmt(o.surcharge_amount)}</td></tr>`).join('')}</table></div>`;
+  $('#isv').disabled=!P.agg.length;
+}
+async function saveInv(){
+  const vid=$('#iv').value, m=$('#im').value; if(!m) return toast('請選擇請款月份');
+  const period=toPeriod(m);
+  const ex=await q(sb.from('invoice_lines').select('id').eq('vendor_id',vid).eq('period',period).limit(1));
+  if (ex.length && !confirm(`${vendorName(vid)} ${m} 已有資料，要覆蓋嗎？`)) return;
+  if (ex.length) await q(sb.from('invoice_lines').delete().eq('vendor_id',vid).eq('period',period));
+  await q(sb.from('invoice_lines').insert(P.agg.map(o=>({...o, vendor_id:vid, period, source_file:U.file}))));
+  const mapping={hr:U.hr, fields:P.mapping};
+  await q(sb.from('vendors').update({column_mapping:mapping}).eq('id',vid));
+  S.vendors.find(x=>x.id===vid).column_mapping=mapping;
+  toast(`已入庫 ${P.agg.length} 筆，欄位對應已記住`); $('#isv').disabled=true; histInv();
+}
+async function histInv(){
+  const d=await q(sb.from('invoice_lines').select('period,vendor_id,hours,source_file').order('period',{ascending:false}).limit(5000));
+  const g=groupBy(d,r=>monthStr(r.period)+'|'+r.vendor_id);
+  $('#ihist').innerHTML = g.size ? `<div class="tw"><table><tr><th>月份</th><th>派遣商</th><th>彙總筆數</th><th>總工時</th><th>來源檔案</th><th></th></tr>
+    ${[...g].map(([k,rs])=>{ const [m,v]=k.split('|'); return `<tr><td>${m}</td><td>${esc(vendorName(v))}</td><td>${rs.length}</td><td>${fmt(sum(rs,'hours'),1)}</td><td class="muted">${esc(rs[0].source_file||'')}</td>
+      <td><button class="btn danger sm" onclick="delInv('${m}','${v}')">刪除</button></td></tr>`; }).join('')}</table></div>` : '<p class="muted">尚無資料</p>';
+}
+async function delInv(m,v){ if(!confirm(`刪除 ${vendorName(v)} ${m} 的請款資料？`)) return;
+  await q(sb.from('invoice_lines').delete().eq('vendor_id',v).eq('period',toPeriod(m))); toast('已刪除'); histInv(); }
+
+/* ---------- 出勤上傳 ---------- */
+const ATT_H=['月份(YYYY-MM)','站點','派遣商','需求人次','到班人次','新進人數','離開人數','月底在職人數'];
+async function pAttend(){
+  $('#app').innerHTML = `<div class="card"><h2>出勤上傳</h2>
+    <p class="hint">每月、每站點、每家派遣商一列。需求與到班用「人次」加總（例：每天要 20 人、做 22 天 = 440 人次）；在職人數用月底名單人數。</p>
+    <div class="row"><button class="btn ghost" id="atpl">下載範本</button><label>匯入範本<input type="file" id="aif" accept=".xlsx,.xls,.csv"></label></div>
+    <h3>單筆輸入（同月份＋站點＋派遣商會覆蓋）</h3>
+    <div class="row"><label>月份<input type="month" id="am"></label><label>站點<select id="as">${opt(S.sites)}</select></label><label>派遣商<select id="av">${opt(S.vendors)}</select></label>
+      <label>需求人次<input type="number" id="a1"></label><label>到班人次<input type="number" id="a2"></label><label>新進人數<input type="number" id="a3"></label>
+      <label>離開人數<input type="number" id="a4"></label><label>在職人數<input type="number" id="a5"></label><button class="btn" id="asv">儲存</button></div></div>
+    <div class="card"><h2>已輸入資料</h2><div id="alist"></div></div>`;
+  $('#atpl').onclick=()=>{ const ws=XLSX.utils.aoa_to_sheet([ATT_H,['2026-10',S.sites[0]?.name||'站點名稱',S.vendors[0]?.name||'派遣商名稱',440,410,5,3,22]]);
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'出勤'); XLSX.writeFile(wb,'出勤上傳範本.xlsx'); };
+  $('#aif').onchange=importAtt;
+  $('#asv').onclick=async()=>{ if(!$('#am').value) return toast('請選月份');
+    await upAtt([{period:toPeriod($('#am').value), site_id:$('#as').value, vendor_id:$('#av').value, requested:+$('#a1').value||0, attended:+$('#a2').value||0,
+      new_hires:+$('#a3').value||0, leavers:+$('#a4').value||0, headcount:+$('#a5').value||0}]); };
+  listAtt();
+}
+async function upAtt(rows){ await q(sb.from('attendance').upsert(rows,{onConflict:'period,site_id,vendor_id'})); toast(`已儲存 ${rows.length} 筆`); listAtt(); }
+async function importAtt(e){
+  const f=e.target.files[0]; if(!f) return;
+  const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:''}).slice(1).filter(r=>r[0]!=='');
+  const bad=[];
+  const out=rows.map((r,i)=>{
+    let m; if (typeof r[0]==='number'){ const d=XLSX.SSF.parse_date_code(r[0]); m=d.y+'-'+String(d.m).padStart(2,'0'); }
+    else m=String(r[0]).trim().replace(/\//g,'-').slice(0,7);
+    const s=normSite(r[1]); const v=S.vendors.find(x=>x.name===String(r[2]).trim());
+    if (!/^\d{4}-\d{2}$/.test(m) || !s || !v){ bad.push(i+2); return null; }
+    return {period:toPeriod(m), site_id:s, vendor_id:v.id, requested:+r[3]||0, attended:+r[4]||0, new_hires:+r[5]||0, leavers:+r[6]||0, headcount:+r[7]||0};
+  }).filter(Boolean);
+  if (out.length) await upAtt(out);
+  if (bad.length) toast(`第 ${bad.slice(0,5).join('、')} 列對不到月份／站點／派遣商，已略過`);
+  e.target.value='';
+}
+async function listAtt(){
+  const d=await q(sb.from('attendance').select('*').order('period',{ascending:false}).limit(300));
+  $('#alist').innerHTML = d.length ? `<div class="tw"><table><tr><th>月份</th><th>站點</th><th>派遣商</th><th>需求</th><th>到班</th><th>到班率</th><th>新進</th><th>離開</th><th>在職</th><th></th></tr>
+    ${d.map(r=>`<tr><td>${monthStr(r.period)}</td><td>${esc(siteName(r.site_id))}</td><td>${esc(vendorName(r.vendor_id))}</td><td>${r.requested}</td><td>${r.attended}</td>
+      <td>${r.requested?pct(r.attended/r.requested):'—'}</td><td>${r.new_hires}</td><td>${r.leavers}</td><td>${r.headcount}</td>
+      <td><button class="btn danger sm" onclick="delAtt('${r.id}')">刪</button></td></tr>`).join('')}</table></div>` : '<p class="muted">尚無資料</p>';
+}
+async function delAtt(id){ if(!confirm('刪除這筆？')) return; await q(sb.from('attendance').delete().eq('id',id)); listAtt(); }
+
+/* ---------- 市場時薪 ---------- */
+async function pMarket(){
+  $('#app').innerHTML = `<div class="card"><h2>市場時薪</h2>
+    <p class="hint">點連結會開啟已設好關鍵字的搜尋結果。看完同縣市、同職務的職缺後，填入時薪的低、中位、高三檔與參考筆數；「面議」與範圍過大的職缺略過不計。只要填了「中位」就會儲存。</p>
+    <div class="row"><label>月份<input type="month" id="mm"></label><button class="btn ghost" id="mld">載入</button></div><div id="mgrid"></div></div>`;
+  $('#mm').value=new Date().toISOString().slice(0,7);
+  $('#mld').onclick=renderMarket; renderMarket();
+}
+function links(city,role){
+  const k=encodeURIComponent(`${city} 倉儲 ${role}`);
+  return `<span class="links"><a target="_blank" rel="noopener" href="https://www.104.com.tw/jobs/search/?keyword=${k}">104</a><a target="_blank" rel="noopener" href="https://www.1111.com.tw/search/job?ks=${k}">1111</a><a target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent('site:518.com.tw '+city+' 倉儲 '+role)}">518</a><a target="_blank" rel="noopener" href="https://www.google.com/search?q=${encodeURIComponent(city+' 倉儲 '+role+' 時薪 臨時工')}">其他</a></span>`;
+}
+async function renderMarket(){
+  const m=$('#mm').value; if(!m) return;
+  const cities=[...new Set(S.sites.map(s=>s.city))];
+  if (!cities.length){ $('#mgrid').innerHTML='<p class="bad">請先在「基本資料」建立站點（含縣市）。</p>'; return; }
+  const d=await q(sb.from('market_rates').select('*').eq('period',toPeriod(m)));
+  const roles=ROLES.filter(r=>r!=='其他');
+  $('#mgrid').innerHTML = `<div class="tw"><table><tr><th>縣市</th><th>職務</th><th>搜尋</th><th>低</th><th>中位</th><th>高</th><th>筆數</th><th>備註</th></tr>
+    ${cities.flatMap(c=>roles.map(r=>{ const x=d.find(y=>y.city===c&&y.job_role===r)||{};
+      return `<tr data-city="${esc(c)}" data-role="${r}"><td>${esc(c)}</td><td>${r}</td><td>${links(c,r)}</td>
+        <td><input type="number" class="ml" value="${x.rate_low??''}" style="width:72px"></td><td><input type="number" class="mmid" value="${x.rate_mid??''}" style="width:72px"></td>
+        <td><input type="number" class="mh" value="${x.rate_high??''}" style="width:72px"></td><td><input type="number" class="mc" value="${x.sample_count??''}" style="width:60px"></td>
+        <td><input class="mn" value="${esc(x.note??'')}" style="width:130px"></td></tr>`; })).join('')}</table></div>
+    <div class="row" style="margin-top:12px"><button class="btn" id="msv">儲存本月</button></div>`;
+  $('#msv').onclick=async()=>{
+    const {data:{user}}=await sb.auth.getUser();
+    const rows=[...document.querySelectorAll('#mgrid tr[data-city]')].map(tr=>({period:toPeriod(m), city:tr.dataset.city, job_role:tr.dataset.role,
+      rate_low:num(tr.querySelector('.ml').value), rate_mid:num(tr.querySelector('.mmid').value), rate_high:num(tr.querySelector('.mh').value),
+      sample_count:num(tr.querySelector('.mc').value), note:tr.querySelector('.mn').value, checked_by:user.email})).filter(r=>r.rate_mid!=null);
+    if (!rows.length) return toast('至少填一格中位數');
+    await q(sb.from('market_rates').upsert(rows,{onConflict:'period,city,job_role'})); toast(`已儲存 ${rows.length} 筆`);
+  };
+}
+
+/* ---------- 分析 ---------- */
+async function pAnalysis(){
+  const F=await loadFacts(); const ms=months(F.inv);
+  if (!ms.length){ $('#app').innerHTML='<div class="card"><p>尚無請款資料，請先到「請款上傳」。</p></div>'; return; }
+  $('#app').innerHTML = `<div class="card"><div class="row" style="margin:0"><label>分析月份<select id="amon">${optS([...ms].reverse())}</select></label>
+    <button class="btn ghost" id="axp">匯出本頁分析</button></div></div><div id="ares"></div>`;
+  const run=()=>renderAnalysis(F,$('#amon').value);
+  $('#amon').onchange=run; $('#axp').onclick=()=>exportAnalysis(F,$('#amon').value); run();
+}
+function renderAnalysis(F,m){
+  const T=S.settings, l1=calcL1(F.inv,m), l2=calcL2(F.inv,F.att,m), l3=calcL3(F.inv,F.mkt,m), l4=calcL4(F.inv);
+  const total=l4.rows.reduce((a,r)=>a+(r.annual||0),0);
+  $('#ares').innerHTML = `
+  <div class="card"><h2>L1 拆價：錢付到哪裡去了</h2>
+    <p class="hint">派遣商毛利 = 請款時薪 − 員工時薪 ×（1 + 法定雇主負擔率 ${T.employer_burden_pct??20}%）。請款單沒有員工時薪時，以當時最低工資估算並標「估」。</p>
+    <div class="tw"><table><tr><th>派遣商</th><th>工時</th><th>請款時薪</th><th>員工時薪</th><th>人力成本</th><th>派遣商毛利</th><th>毛利率</th></tr>
+    ${l1.map(r=>`<tr><td>${esc(r.vendor)}</td><td>${fmt(r.hours)}</td><td>${fmt(r.bill,1)}</td><td>${fmt(r.pay,1)}${r.est?' <span class="muted">估</span>':''}</td><td>${fmt(r.cost,1)}</td><td>${fmt(r.margin,1)}</td><td>${pct(r.mpct)}</td></tr>`).join('')}</table></div></div>
+  <div class="card"><h2>L2 有效成本：真正每小時花多少</h2>
+    <p class="hint">有效成本 = 請款時薪 ÷ 到班率 ×（1 + 新進比例 × 上手損失率 ${T.ramp_loss_pct??30}%）。需要該月出勤資料。</p>
+    ${l2.length?`<div class="tw"><table><tr><th>站點</th><th>派遣商</th><th>請款時薪</th><th>到班率</th><th>新進比例</th><th>當月留任率</th><th>有效成本</th></tr>
+    ${l2.map(r=>`<tr><td>${esc(r.site)}</td><td>${esc(r.vendor)}</td><td>${fmt(r.bill,1)}</td><td class="${r.ar!=null&&r.ar*100<(T.attendance_min_pct??85)?'bad':''}">${pct(r.ar)}</td><td>${pct(r.nr)}</td><td>${pct(r.ret)}</td><td><b>${fmt(r.eff,1)}</b></td></tr>`).join('')}</table></div>`:'<p class="muted">此月份尚無出勤資料。</p>'}</div>
+  <div class="card"><h2>L3 市場位置：我們的時薪有競爭力嗎</h2>
+    <p class="hint">比值 = 我方員工時薪 ÷ 同縣市同職務的市場中位數。低於 ${T.market_ratio_min_pct??95}% 標紅，代表補人會越來越難。請款單沒有員工時薪的派遣商不列入比較。</p>
+    <div class="tw"><table><tr><th>縣市</th><th>職務</th><th>我方員工時薪</th><th>市場中位數</th><th>市場資料月份</th><th>比值</th></tr>
+    ${l3.map(r=>`<tr><td>${esc(r.city)}</td><td>${r.role}</td><td>${fmt(r.pay)}</td><td>${fmt(r.mid)}</td><td class="muted">${r.mmonth||'無資料'}</td><td class="${r.ratio!=null&&r.ratio*100<(T.market_ratio_min_pct??95)?'bad':''}">${pct(r.ratio,0)}</td></tr>`).join('')}</table></div></div>
+  <div class="card"><h2>L4 調價試算：下一次最低工資調整</h2>
+    ${l4.next?`<p class="hint">${l4.next.effective_date} 起最低時薪 ${l4.prev?l4.prev.hourly+' → ':''}${l4.next.hourly} 元${l4.next.note?'（'+esc(l4.next.note)+'）':''}。<br>
+    每小時增加 = 最低時薪差額 ×（1 + 法定負擔率）×（1 + 約定加成率）；年度影響 = 每小時增加 × 近 3 個月平均月工時 × 12。假設派遣員工時薪貼近最低工資，實際以合約為準。</p>
+    ${l4.rows.length?`<div class="tw"><table><tr><th>派遣商</th><th>站點</th><th>調價條款</th><th>目前請款時薪</th><th>每小時增加</th><th>試算後時薪</th><th>平均月工時</th><th>年度影響（元）</th></tr>
+    ${l4.rows.map(r=>`<tr><td>${esc(r.vendor)}</td><td>${esc(r.site)}</td><td>${esc(r.clause)}</td><td>${fmt(r.bill,1)}</td><td>${fmt(r.dBill,1)}</td><td>${fmt(r.newBill,1)}</td><td>${fmt(r.hrs)}</td><td><b>${fmt(r.annual)}</b></td></tr>`).join('')}
+    <tr><td colspan="7"><b>合計</b></td><td><b>${fmt(total)}</b></td></tr></table></div>`:'<p class="muted">尚未建立合約資料，請到「基本資料 › 合約」填寫調價條款。</p>'}`
+    :'<p class="muted">「基本資料 › 最低工資」中沒有未來生效的調整。</p>'}</div>`;
+}
+function exportAnalysis(F,m){
+  const wb=XLSX.utils.book_new(); const add=(n,rows)=>XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows.length?rows:[{}]),n);
+  add('L1拆價',calcL1(F.inv,m).map(r=>({派遣商:r.vendor,工時:r.hours,請款時薪:r.bill,員工時薪:r.pay,員工時薪為估算:r.est?'是':'',人力成本:r.cost,派遣商毛利:r.margin,毛利率:r.mpct})));
+  add('L2有效成本',calcL2(F.inv,F.att,m).map(r=>({站點:r.site,派遣商:r.vendor,請款時薪:r.bill,到班率:r.ar,新進比例:r.nr,留任率:r.ret,有效成本:r.eff})));
+  add('L3市場位置',calcL3(F.inv,F.mkt,m).map(r=>({縣市:r.city,職務:r.role,我方員工時薪:r.pay,市場中位數:r.mid,市場資料月份:r.mmonth,比值:r.ratio})));
+  add('L4調價試算',calcL4(F.inv).rows.map(r=>({派遣商:r.vendor,站點:r.site,調價條款:r.clause,目前請款時薪:r.bill,每小時增加:r.dBill,試算後時薪:r.newBill,平均月工時:r.hrs,年度影響:r.annual})));
+  XLSX.writeFile(wb,`派遣分析_${m}.xlsx`);
+}
+
+/* ---------- 基本資料 ---------- */
+const MASTER={
+  sites:{name:'站點',cols:[['name','站點名稱','text'],['city','縣市','text']]},
+  vendors:{name:'派遣商',cols:[['name','派遣商名稱','text'],['note','備註','text']]},
+  contracts:{name:'合約',cols:[['vendor_id','派遣商','vendor'],['site_id','站點','site'],['pricing_method','計價方式','text'],['markup_rate','約定加成率（0.15=15%）','num'],
+    ['adjust_clause','調價條款','clause'],['adjust_note','條款說明','text'],['start_date','生效日','date'],['end_date','到期日','date']]},
+  min_wage:{name:'最低工資',pk:'year',cols:[['year','年度','num'],['hourly','時薪','num'],['monthly','月薪','num'],['effective_date','生效日','date'],['note','備註','text']]}
+};
+const MASTER_HINT={
+  sites:'縣市用來比對市場時薪，請統一寫法，例如「桃園市」。',
+  vendors:'刪除派遣商會一併刪除它的請款、出勤與合約資料。',
+  contracts:'調價條款決定 L4 試算：綁最低工資＝最低工資一調就跟著調；固定年調＝依合約約定；需另議＝合約沒寫，但預期派遣商會來談；無＝合約期間不調價。站點留「全部站點」代表同一份合約適用所有站點。',
+  min_wage:'每年 9 月審議會公布後新增下一年度，行政院核定後把備註更新。'
+};
+let mTab='sites';
+async function pMaster(){
+  $('#app').innerHTML = `<div class="card"><div class="row">${Object.entries(MASTER).map(([k,v])=>`<button class="tab ${k===mTab?'on':''}" data-mt="${k}">${v.name}</button>`).join('')}</div><div id="mbody"></div></div>`;
+  document.querySelectorAll('[data-mt]').forEach(b=>b.onclick=()=>{ mTab=b.dataset.mt; pMaster(); });
+  await renderMaster();
+}
+function cell(t,k,val){
+  if (t==='vendor') return `<select data-f="${k}"><option value="">—</option>${opt(S.vendors,val)}</select>`;
+  if (t==='site') return `<select data-f="${k}"><option value="">全部站點</option>${opt(S.sites,val)}</select>`;
+  if (t==='clause') return `<select data-f="${k}"><option value="">—</option>${optS(['綁最低工資','固定年調','需另議','無'],val)}</select>`;
+  return `<input data-f="${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any" value="${esc(val??'')}">`;
+}
+async function renderMaster(){
+  const M=MASTER[mTab], pk=M.pk||'id'; const rows=await all(mTab);
+  $('#mbody').innerHTML = `<div class="tw"><table><tr>${M.cols.map(c=>`<th>${c[1]}</th>`).join('')}<th></th></tr>
+    ${rows.map(r=>`<tr data-id="${esc(r[pk])}">${M.cols.map(([k,,t])=>`<td>${cell(t,k,r[k])}</td>`).join('')}
+      <td style="white-space:nowrap"><button class="btn ghost sm" data-a="save">存</button> <button class="btn danger sm" data-a="del">刪</button></td></tr>`).join('')}
+    <tr data-id="">${M.cols.map(([k,,t])=>`<td>${cell(t,k,'')}</td>`).join('')}<td><button class="btn sm" data-a="add">新增</button></td></tr></table></div>
+    <p class="hint">${MASTER_HINT[mTab]}</p>`;
+  $('#mbody').onclick=async e=>{
+    const a=e.target.dataset.a; if(!a) return;
+    const tr=e.target.closest('tr'), id=tr.dataset.id, obj={};
+    tr.querySelectorAll('[data-f]').forEach(el=>{ const c=M.cols.find(x=>x[0]===el.dataset.f); let v=el.value;
+      if (c[2]==='num') v = v===''?null:Number(v); else if (v==='') v=null; obj[el.dataset.f]=v; });
+    if (a==='del'){ if(!confirm('確定刪除？')) return; await q(sb.from(mTab).delete().eq(pk,id)); }
+    else if (a==='save') await q(sb.from(mTab).update(obj).eq(pk,id));
+    else await q(sb.from(mTab).insert(obj));
+    toast('已更新'); await loadBase(); renderMaster();
+  };
+}
+
+/* ---------- 設定 ---------- */
+const SET_LABELS=[['price_mom_pct','單價月增警示門檻（%）'],['attendance_min_pct','到班率警示門檻（%）'],['market_ratio_min_pct','市場比值警示門檻（%）'],
+  ['wage_alert_days','最低工資調整提前提醒天數'],['employer_burden_pct','法定雇主負擔率（%，勞健保、勞退、職災）'],['ramp_loss_pct','新人上手效率損失率（%）']];
+async function pSettings(){
+  const hr=await all('hr_members');
+  $('#app').innerHTML = `<div class="card"><h2>警示門檻與計算參數</h2>
+    <div class="tw"><table>${SET_LABELS.map(([k,l])=>`<tr><td>${l}</td><td><input type="number" step="any" data-set="${k}" value="${S.settings[k]??''}"></td></tr>`).join('')}</table></div>
+    <p class="hint">法定雇主負擔率請 BP 依實際投保級距校正；上手損失率先用預設值，跑一季後依現場回饋調整。</p><button class="btn" id="ssv">儲存</button></div>
+  <div class="card"><h2>HR 帳號名單</h2><p class="hint">名單內的 Email 才能讀寫資料。新同仁還需要由平台管理者在 Supabase 建立登入帳號。</p>
+    <div class="tw"><table><tr><th>Email</th><th>姓名</th><th></th></tr>
+    ${hr.map(h=>`<tr><td>${esc(h.email)}</td><td>${esc(h.name||'')}</td><td><button class="btn danger sm" data-hr="${esc(h.email)}">移除</button></td></tr>`).join('')}
+    <tr><td><input id="he" type="email"></td><td><input id="hn"></td><td><button class="btn sm" id="hadd">新增</button></td></tr></table></div></div>
+  <div class="card"><h2>匯出備份</h2><p class="hint">一鍵匯出全部資料表成 Excel，建議每月存一份到 SharePoint。</p><button class="btn" id="exall">匯出全部資料</button></div>`;
+  $('#ssv').onclick=async()=>{ const rows=[...document.querySelectorAll('#app input[data-set]')].map(i=>({key:i.dataset.set, value:Number(i.value), label:SET_LABELS.find(x=>x[0]===i.dataset.set)[1]}));
+    await q(sb.from('settings').upsert(rows)); await loadBase(); toast('已儲存'); };
+  $('#hadd').onclick=async()=>{ const e=$('#he').value.trim().toLowerCase(); if(!e) return; await q(sb.from('hr_members').insert({email:e,name:$('#hn').value})); pSettings(); };
+  document.querySelectorAll('[data-hr]').forEach(b=>b.onclick=async()=>{ const e=b.dataset.hr; const {data:{user}}=await sb.auth.getUser();
+    if (e.toLowerCase()===user.email.toLowerCase()) return toast('不能移除自己');
+    if (!confirm('移除 '+e+'？')) return; await q(sb.from('hr_members').delete().eq('email',e)); pSettings(); });
+  $('#exall').onclick=exportAll;
+}
+async function exportAll(){
+  const t={sites:'站點',vendors:'派遣商',contracts:'合約',invoice_lines:'請款明細',attendance:'出勤',market_rates:'市場時薪',min_wage:'最低工資',settings:'設定',hr_members:'HR名單'};
+  const wb=XLSX.utils.book_new();
+  for (const [k,n] of Object.entries(t)){
+    const rows=(await all(k)).map(r=>{ const o={...r}; if(o.vendor_id) o.派遣商=vendorName(o.vendor_id); if(o.site_id) o.站點=siteName(o.site_id);
+      if (o.column_mapping) o.column_mapping=JSON.stringify(o.column_mapping); return o; });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length?rows:[{}]), n);
+  }
+  XLSX.writeFile(wb,`派遣分析平台_備份_${new Date().toISOString().slice(0,10)}.xlsx`);
+  toast('已匯出');
+}
+
+init();
+</script>
+</body>
+</html>
